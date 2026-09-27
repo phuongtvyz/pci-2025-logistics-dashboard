@@ -1,37 +1,42 @@
 # -*- coding: utf-8 -*-
 
 """
-PCI 2025 - Local Business Environment Dashboard
+PCI 2025 - Local Business Environment Dashboard (Academic Version)
 
 Nguồn dữ liệu:
     pci_2025_dashboard.csv
 
-Dataset cuối cùng:
-    34 địa phương
-    9 thành phần PCI đã chuẩn hóa về thang 0-10
-    Điểm môi trường kinh doanh tổng hợp
-    Xếp hạng (Dense Rank)
-    Ward Cluster (K=2)
-    Silhouette
+Dataset chuẩn hóa:
+    - 34 địa phương duy nhất
+    - 9 thành phần PCI (thang 0-10)
+    - Điểm môi trường kinh doanh tổng hợp
+    - Xếp hạng Dense Rank
+    - Ward Cluster (K=2)
 
-Mục đích:
-    Phân tích và sàng lọc tương đối mức độ thuận lợi
-    của môi trường kinh doanh cấp địa phương.
-
-Lưu ý:
-    Dashboard KHÔNG phải mô hình tối ưu hóa vị trí kho,
-    trung tâm phân phối hoặc fulfillment center.
+Lưu ý phương pháp luận:
+    Dashboard đóng vai trò Presentation Layer, phục vụ đánh giá và sàng lọc
+    tương đối môi trường kinh doanh cấp địa phương. Không phải mô hình tối ưu
+    hóa vị trí kho bãi hay trung tâm logistics.
 """
 
 import os
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
 
 # ============================================================
-# 1. PAGE CONFIG
+# 1. CONSTANTS & ACADEMIC CONFIGURATION
+# ============================================================
+
+SILHOUETTE_K2 = 0.2905       # Được tính toán tại notebook validation
+ARI_WARD_KMEANS = 1.0000     # Độ tương đồng 100% giữa Ward và K-Means (K=2)
+
+
+# ============================================================
+# 2. PAGE CONFIG & CUSTOM CSS
 # ============================================================
 
 st.set_page_config(
@@ -40,12 +45,37 @@ st.set_page_config(
     layout="wide"
 )
 
+st.markdown("""
+<style>
+    div[data-testid="stMetric"] {
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        padding: 14px 18px;
+        border-radius: 10px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+    div[data-testid="stMetric"] label {
+        font-weight: 600;
+        color: #475569;
+    }
+    button[data-baseweb="tab"] {
+        font-size: 15px;
+        font-weight: 600;
+    }
+    .main-title {
+        color: #1e3a8a;
+        font-weight: 700;
+        margin-bottom: 5px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 # ============================================================
-# 2. TITLE & INTRODUCTION
+# 3. TITLE & HEADER
 # ============================================================
 
-st.title("📊 Phân tích môi trường kinh doanh cấp địa phương theo PCI 2025")
+st.markdown("<h1 class='main-title'>📊 Phân tích môi trường kinh doanh cấp địa phương theo PCI 2025</h1>", unsafe_allow_html=True)
 
 st.markdown(
     """
@@ -57,7 +87,7 @@ Dashboard hỗ trợ phân tích mức độ thuận lợi của môi trường 
 
 
 # ============================================================
-# 3. LOAD DATA
+# 4. LOAD DATA
 # ============================================================
 
 @st.cache_data
@@ -71,13 +101,13 @@ def load_data():
 try:
     df = load_data()
 except Exception as e:
-    st.error("Không thể đọc file `pci_2025_dashboard.csv`.")
+    st.error("Không thể đọc file `pci_2025_dashboard.csv`. Vui lòng kiểm tra file trên GitHub Repository.")
     st.code(str(e))
     st.stop()
 
 
 # ============================================================
-# 4. DEFINE COLUMNS
+# 5. DEFINE COLUMNS & RIGOROUS DATA CLEANING
 # ============================================================
 
 province_col = "Tỉnh/Thành phố"
@@ -99,11 +129,6 @@ rank_col = "Xếp hạng"
 cluster_col = "Ward_Cluster"
 silhouette_col = "Silhouette"
 
-
-# ============================================================
-# 5. DATA VALIDATION & CLEANING
-# ============================================================
-
 required_cols = [province_col, *pci_cols, score_col, rank_col, cluster_col, silhouette_col]
 missing_cols = [col for col in required_cols if col not in df.columns]
 
@@ -111,8 +136,12 @@ if missing_cols:
     st.error(f"Dataset thiếu các cột bắt buộc: {missing_cols}")
     st.stop()
 
+# Data Cleaning
 df = df.copy()
-df[province_col] = df[province_col].astype(str).str.strip()
+
+# Sửa lỗi ép kiểu "nan" chuỗi: Xử lý missing value chuẩn trước khi astype
+df[province_col] = df[province_col].replace(["nan", "NaN", "None", "null", "NULL"], pd.NA)
+df[province_col] = df[province_col].astype("string").str.strip()
 df = df[df[province_col].notna() & (df[province_col] != "")].drop_duplicates(subset=[province_col])
 
 for col in pci_cols:
@@ -128,29 +157,41 @@ df[silhouette_col] = pd.to_numeric(df[silhouette_col], errors="coerce")
 # 6. SIDEBAR
 # ============================================================
 
-st.sidebar.header("🔎 Bộ lọc địa phương")
+st.sidebar.header("🔎 Bộ lọc & Tiêu điểm")
 province_options = ["Tất cả"] + sorted(df[province_col].unique().tolist())
-selected_province = st.sidebar.selectbox("Chọn địa phương", province_options)
+selected_province = st.sidebar.selectbox("Chọn địa phương tiêu điểm", province_options)
 
-if selected_province == "Tất cả":
-    df_selected = df.copy()
-else:
-    df_selected = df[df[province_col] == selected_province].copy()
+st.sidebar.markdown("---")
+st.sidebar.caption("PCI 2025 Local Business Environment Dashboard | Phát triển bằng Python & Streamlit")
 
 
 # ============================================================
 # 7. SUMMARY KPIs
 # ============================================================
 
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("Số địa phương", df[province_col].nunique())
-with col2:
-    st.metric("Điểm cao nhất", f"{df[score_col].max():.2f}")
-with col3:
-    st.metric("Điểm thấp nhất", f"{df[score_col].min():.2f}")
-with col4:
-    st.metric("Số cụm Ward", df[cluster_col].nunique())
+if selected_province == "Tất cả":
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Số địa phương mẫu", df[province_col].nunique())
+    with col2:
+        top_prov = df.sort_values(score_col, ascending=False).iloc[0]
+        st.metric("Điểm cao nhất", f"{top_prov[score_col]:.2f}", f"Top 1: {top_prov[province_col]}")
+    with col3:
+        min_prov = df.sort_values(score_col, ascending=True).iloc[0]
+        st.metric("Điểm thấp nhất", f"{min_prov[score_col]:.2f}", f"Hạng 33: {min_prov[province_col]}")
+    with col4:
+        st.metric("Số cụm Ward (K)", df[cluster_col].nunique())
+else:
+    prov_row = df[df[province_col] == selected_province].iloc[0]
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Địa phương chọn", prov_row[province_col])
+    with col2:
+        st.metric("Điểm tổng hợp", f"{prov_row[score_col]:.2f}")
+    with col3:
+        st.metric("Xếp hạng (Dense Rank)", f"Hạng {int(prov_row[rank_col])} / 33")
+    with col4:
+        st.metric("Thuộc nhóm Ward", f"Cluster {int(prov_row[cluster_col])}", f"Silhouette: {prov_row[silhouette_col]:.4f}")
 
 
 # ============================================================
@@ -163,7 +204,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
         "🔎 Phân nhóm",
         "📊 Phân tích PCI",
         "⚖️ Kịch bản trọng số",
-        "📋 Dữ liệu & Export"
+        "📋 Dữ liệu & Validation"
     ]
 )
 
@@ -190,17 +231,19 @@ with tab1:
         .sort_values(by=score_col, ascending=True)
     )
 
-    fig = px.bar(
+    colors = ["#f97316" if p == selected_province else "#3b82f6" for p in top10[province_col]]
+
+    fig_top10 = px.bar(
         top10, x=score_col, y=province_col, orientation="h",
         text=score_col, title="Top 10 địa phương dẫn đầu"
     )
-    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-    fig.update_layout(
+    fig_top10.update_traces(marker_color=colors, texttemplate="%{text:.2f}", textposition="outside")
+    fig_top10.update_layout(
         xaxis_title="Điểm môi trường kinh doanh", yaxis_title="",
-        xaxis=dict(range=[0, 10], dtick=1), height=500,
+        xaxis=dict(range=[0, 10], dtick=1), height=480,
         margin=dict(l=20, r=80, t=50, b=50), showlegend=False
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig_top10, use_container_width=True)
 
     st.subheader("Bảng xếp hạng đầy đủ 34 địa phương")
     ranking_table = ranking_df.copy()
@@ -208,8 +251,8 @@ with tab1:
     st.dataframe(ranking_table, use_container_width=True, hide_index=True, height=600)
 
     st.info(
-        "Lưu ý: Mẫu nghiên cứu sử dụng trọng số bằng nhau làm kịch bản cơ sở nhằm hạn chế việc "
-        "áp đặt chủ quan khi không có dữ liệu thực nghiệm độc lập về trọng số ngành."
+        "Lưu ý: Nghiên cứu sử dụng trọng số bằng nhau làm kịch bản cơ sở nhằm hạn chế áp đặt chủ quan "
+        "khi chưa có nghiên cứu thực nghiệm độc lập về trọng số ngành."
     )
 
 
@@ -228,11 +271,12 @@ with tab2:
     with c3:
         st.metric("Cluster 1", int((df[cluster_col] == 1).sum()))
     with c4:
-        st.metric("Silhouette Trung bình", "0.2905")
+        st.metric("Silhouette Trung bình", f"{SILHOUETTE_K2:.4f}")
 
     st.info(
-        "K = 2 được lựa chọn với hệ số Silhouette = 0.2905. Kết quả Ward được kiểm chứng bằng K-Means "
-        "với Adjusted Rand Index (ARI) = 1.0000. Phân cụm mang tính chất khám phá cấu trúc dữ liệu."
+        f"K = 2 được lựa chọn với hệ số Silhouette = {SILHOUETTE_K2:.4f}. Kết quả Ward được kiểm chứng bằng K-Means "
+        f"với Adjusted Rand Index (ARI) = {ARI_WARD_KMEANS:.4f} (được tính toán ở bước validation trong notebook). "
+        "Phân cụm mang tính chất khám phá cấu trúc dữ liệu."
     )
 
     st.subheader("Hồ sơ trung bình của các cụm")
@@ -270,34 +314,50 @@ with tab3:
     st.subheader("📊 Phân tích khám phá 9 thành phần PCI")
 
     # --- UPGRADE 1: RADAR CHART ---
-    st.markdown("### 1. So sánh hồ sơ 9 thành phần PCI giữa hai địa phương")
-    province_list = sorted(df[province_col].dropna().unique().tolist())
+    st.markdown("### 1. So sánh hồ sơ 9 thành phần PCI giữa hai địa phương / Mức trung bình")
+    province_list = ["-- Trung bình 34 tỉnh/thành --"] + sorted(df[province_col].dropna().unique().tolist())
+    
+    # Tìm index chuẩn xác cho TP.HCM thay vì chọn cứng index 18
+    default_province_b = "TP. Hồ Chí Minh"
+    if default_province_b in province_list:
+        default_b_idx = province_list.index(default_province_b)
+    else:
+        default_b_idx = 0
+
     col_r1, col_r2 = st.columns(2)
     with col_r1:
-        province_a = st.selectbox("Địa phương 1", province_list, index=0, key="radar_a")
+        init_a = selected_province if selected_province != "Tất cả" else "Đà Nẵng"
+        idx_a = province_list.index(init_a) if init_a in province_list else 1
+        province_a = st.selectbox("Đối tượng 1", province_list, index=idx_a, key="radar_a")
     with col_r2:
-        default_b = 18 if len(province_list) > 18 else 1  # Mặc định TP.HCM hoặc vị trí khác
-        province_b = st.selectbox("Địa phương 2", province_list, index=default_b, key="radar_b")
+        province_b = st.selectbox("Đối tượng 2", province_list, index=default_b_idx, key="radar_b")
 
-    radar_a = df[df[province_col] == province_a].iloc[0]
-    radar_b = df[df[province_col] == province_b].iloc[0]
+    if province_a == "-- Trung bình 34 tỉnh/thành --":
+        val_a_raw = df[pci_cols].mean().values
+    else:
+        val_a_raw = df[df[province_col] == province_a][pci_cols].iloc[0].values
 
-    # Khép kín đường đa giác radar
+    if province_b == "-- Trung bình 34 tỉnh/thành --":
+        val_b_raw = df[pci_cols].mean().values
+    else:
+        val_b_raw = df[df[province_col] == province_b][pci_cols].iloc[0].values
+
+    # Khép kín đa giác Radar
     categories = [c.replace("PCI_", "PCI ") for c in pci_cols]
     categories_closed = categories + [categories[0]]
-    val_a = [radar_a[c] for c in pci_cols] + [radar_a[pci_cols[0]]]
-    val_b = [radar_b[c] for c in pci_cols] + [radar_b[pci_cols[0]]]
+    val_a = list(val_a_raw) + [val_a_raw[0]]
+    val_b = list(val_b_raw) + [val_b_raw[0]]
 
     fig_radar = go.Figure()
-    fig_radar.add_trace(go.Scatterpolar(r=val_a, theta=categories_closed, fill="toself", name=province_a))
-    fig_radar.add_trace(go.Scatterpolar(r=val_b, theta=categories_closed, fill="toself", name=province_b))
+    fig_radar.add_trace(go.Scatterpolar(r=val_a, theta=categories_closed, fill="toself", name=province_a, line_color="#1e3a8a"))
+    fig_radar.add_trace(go.Scatterpolar(r=val_b, theta=categories_closed, fill="toself", name=province_b, line_color="#f97316"))
     fig_radar.update_layout(
         polar=dict(radialaxis=dict(visible=True, range=[0, 10])),
         title=f"So sánh hồ sơ PCI: {province_a} vs {province_b}",
         height=550
     )
     st.plotly_chart(fig_radar, use_container_width=True)
-    st.caption("Radar Chart trực quan hóa sự khác biệt hồ sơ giữa 2 địa phương trên thang điểm chuẩn hóa 0–10.")
+    st.caption("Radar Chart trực quan hóa sự khác biệt hồ sơ trên thang điểm chuẩn hóa 0–10.")
 
     st.divider()
 
@@ -326,7 +386,7 @@ with tab3:
 
     st.divider()
 
-    # --- CORRELATION MATRIX & STATS ---
+    # --- CORRELATION MATRIX ---
     st.markdown("### 3. Ma trận tương quan toàn bộ 9 thành phần PCI")
     corr_matrix = df[pci_cols].corr().round(2)
     fig_corr = px.imshow(corr_matrix, text_auto=True, aspect="auto", title="Tương quan Pearson toàn bộ 9 thành phần PCI")
@@ -359,13 +419,16 @@ with tab4:
     else:
         normalized_weights = {c: weight_values[c] / total_weight for c in pci_cols}
 
+        # Bảng hiển thị tỷ trọng phần trăm chuẩn hóa
+        st.markdown("#### Tỷ trọng phần trăm (%) sau chuẩn hóa:")
+        weight_display_df = pd.DataFrame([{
+            c.split(":")[0]: f"{normalized_weights[c]*100:.2f}%" for c in pci_cols
+        }])
+        st.dataframe(weight_display_df, use_container_width=True, hide_index=True)
+
         scenario_df = df.copy()
         scenario_df["Điểm kịch bản"] = sum(scenario_df[c] * normalized_weights[c] for c in pci_cols)
-        
-        # Dense Rank đồng bộ với pipeline chính
         scenario_df["Xếp hạng kịch bản"] = scenario_df["Điểm kịch bản"].rank(method="dense", ascending=False).astype(int)
-        
-        # Thay đổi thứ hạng (Số dương = Thăng hạng/Cải thiện thứ hạng)
         scenario_df["Thay đổi thứ hạng"] = scenario_df[rank_col] - scenario_df["Xếp hạng kịch bản"]
 
         st.subheader("Bảng so sánh kết quả kịch bản")
@@ -378,7 +441,7 @@ with tab4:
         ]
 
         st.dataframe(scenario_table, use_container_width=True, hide_index=True, height=500)
-        st.caption("Chú thích 'Thay đổi vị trí': Số dương (+) thể hiện địa phương tăng hạng (ví dụ từ hạng 18 lên hạng 10 là +8).")
+        st.caption("Chú thích 'Thay đổi vị trí': Giá trị dương (+) cho biết vị trí tương đối của địa phương được cải thiện (ví dụ từ hạng 18 lên hạng 10 là +8 vị trí).")
 
         st.subheader("Top 10 địa phương theo kịch bản mới")
         top10_scenario = scenario_df.sort_values(by="Điểm kịch bản", ascending=False).head(10).sort_values(by="Điểm kịch bản", ascending=True)
@@ -390,12 +453,23 @@ with tab4:
 
 
 # ------------------------------------------------------------
-# TAB 5 — DATA & EXPORT (UPGRADE 4)
+# TAB 5 — DATA & VALIDATION (UPGRADE 4)
 # ------------------------------------------------------------
 with tab5:
-    st.subheader("📋 Dataset phân tích & Xuất dữ liệu")
+    st.subheader("📋 Dataset phân tích & Validation Dữ liệu")
 
-    st.write(f"Dataset hiện tại gồm **{len(df)} địa phương** và **9 thành phần PCI**.")
+    # Thẻ Data Validation trực tiếp
+    v1, v2, v3, v4 = st.columns(4)
+    with v1:
+        st.metric("Số dòng (Rows)", len(df))
+    with v2:
+        st.metric("Địa phương duy nhất", df[province_col].nunique())
+    with v3:
+        st.metric("Missing values", int(df[pci_cols].isna().sum().sum()))
+    with v4:
+        st.metric("Duplicate địa phương", int(df[province_col].duplicated().sum()))
+
+    st.markdown("---")
 
     search_text = st.text_input("Tìm kiếm địa phương", placeholder="Nhập tên địa phương...")
     if search_text:
