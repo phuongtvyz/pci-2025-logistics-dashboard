@@ -30,10 +30,9 @@ import plotly.graph_objects as go
 # ============================================================
 # 1. CONSTANTS & ACADEMIC CONFIGURATION
 # ============================================================
-
-SILHOUETTE_K2 = 0.2905       # Được tính toán tại notebook validation
-ARI_WARD_KMEANS = 1.0000     # Độ tương đồng 100% giữa Ward và K-Means (K=2)
-
+# Khai báo Hằng số ở đầu file (Presentation Layer)
+SILHOUETTE_K2 = 0.2905       # Chỉ số Silhouette được truyền từ notebook validation
+ARI_WARD_KMEANS = 1.0000     # Chỉ số ARI xác thực độ tương đồng Ward vs K-Means
 
 # ============================================================
 # 2. PAGE CONFIG & CUSTOM CSS
@@ -139,7 +138,7 @@ if missing_cols:
 # Data Cleaning
 df = df.copy()
 
-# Sửa lỗi ép kiểu "nan" chuỗi: Xử lý missing value chuẩn trước khi astype
+# Code khắc phục triệt để lỗi "nan": Xử lý missing value chuẩn trước khi astype
 df[province_col] = df[province_col].replace(["nan", "NaN", "None", "null", "NULL"], pd.NA)
 df[province_col] = df[province_col].astype("string").str.strip()
 df = df[df[province_col].notna() & (df[province_col] != "")].drop_duplicates(subset=[province_col])
@@ -418,6 +417,23 @@ with tab4:
         st.error("Tổng trọng số phải lớn hơn 0. Vui lòng chọn ít nhất một thành phần PCI có trọng số > 0.")
     else:
         normalized_weights = {c: weight_values[c] / total_weight for c in pci_cols}
+        weight_display = pd.DataFrame({
+    "Thành phần PCI": [
+        c.split(":")[0] for c in pci_cols
+    ],
+    "Trọng số gốc": [
+        weight_values[c] for c in pci_cols
+    ],
+    "Trọng số chuẩn hóa (%)": [
+        normalized_weights[c] * 100 for c in pci_cols
+    ]
+})
+
+st.dataframe(
+    weight_display,
+    use_container_width=True,
+    hide_index=True
+)
 
         # Bảng hiển thị tỷ trọng phần trăm chuẩn hóa
         st.markdown("#### Tỷ trọng phần trăm (%) sau chuẩn hóa:")
